@@ -1,0 +1,10 @@
+Changelog
+=========
+1.10
+- Added Settings export/import (JSON)
+- Added plugin action Settings link
+- Whitelist improvements and UI polish
+- Version bumped to 1.10
+
+1.00
+- Initial release

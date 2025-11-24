@@ -1,0 +1,5 @@
+GNU GENERAL PUBLIC LICENSE
+Version 2, June 1991
+
+(C)opyright (C) 1991 Free Software Foundation, Inc.
+... (standard GPL text omitted here for brevity) ...
