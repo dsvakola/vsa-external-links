@@ -1,0 +1,14 @@
+# Windows system files
+Thumbs.db
+Desktop.ini
+
+# macOS system files
+.DS_Store
+
+# IDE folders
+.vscode/
+.idea/
+
+# Package directories (future proofing)
+node_modules/
+vendor/
