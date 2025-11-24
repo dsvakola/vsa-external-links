@@ -1,10 +1,40 @@
-Changelog
-=========
-1.10
-- Added Settings export/import (JSON)
-- Added plugin action Settings link
-- Whitelist improvements and UI polish
-- Version bumped to 1.10
+WebOrbit — Changelog
 
-1.00
-- Initial release
+Version 1.11 — 2025-11-24
+* Added: Whitelist wildcard support for IPs and domains (supports * and ? patterns)
+* Added: Per-role access control UI and backend support (define rules by WP role)
+* Improved: Rule matching performance and caching
+* Fixed: Edge-case where empty-rule sets blocked admin dashboard for some installs
+* Fixed: UI layout issues on small screens
+* Docs: Updated README.md and readme.txt with new features and upgrade steps
+
+Version 1.10 — 2025-08-07
+* Added: Global whitelist and basic logging
+* Fixed: Compatibility with caching plugins (improved headers)
+* Improved: Fallback behavior for unknown requests
+
+Version 1.0 — 2025-04-14
+* Initial public release: core request filtering and whitelist functionality
+
+=========== Deployment (Chainlog Audit) ===============
+WebOrbit — Chain Log (deployment & audit)
+
+2025-11-24 10:00 UTC — v1.11
+- Commit: 9a3f2d8
+- Deployed by: Prof. Dr. Dattaraj Vidyasagar
+- Notes: Added wildcard matcher, per-role DB structure (option `weborbit_role_rules`), migration script executed.
+
+2025-08-07 08:30 UTC — v1.10
+- Commit: 5e2b7c1
+- Deployed by: weborbit-ci
+- Notes: Initial public release artifacts uploaded to plugin repo.
+
+2025-04-14 15:42 UTC — v1.0
+- Commit: a12c4b0
+- Deployed by: development
+- Notes: Core engine and tests committed.
+
+Guidelines:
+- Always tag release commits (e.g., `v1.11`).
+- Keep backup of the `weborbit_bypass_token` prior to production activation if rules are strict.
+- For hotfixes, use `hotfix/<issue>` branch and document patch commits here with timestamps and operators.

@@ -3,7 +3,7 @@
  * Plugin Name: External Links: Open in New Tab (VSA)
  * Plugin URI:  https://vsa.edu.in/plugins/external-links/
  * Description: Force external links to open in a new tab/window | By VSA | Contact Support for your feedback
- * Version:     1.10
+ * Version:     1.11
  * Author:      Vidyasagar Academy
  * Author URI:  https://vsa.edu.in/
  * Text Domain: vsa-external-links
@@ -21,8 +21,9 @@ if ( ! defined( 'ABSPATH' ) ) {
  */
 function vsa_get_default_options() {
     return array(
-        'enabled'   => 1,
-        'whitelist' => "vsa.edu.in\nwww.vsa.edu.in",
+        'enabled'      => 1,
+        'whitelist'    => "vsa.edu.in\nwww.vsa.edu.in",
+        'exclude_roles'=> array(), // role slugs to exclude (admins etc)
     );
 }
 
@@ -38,8 +39,41 @@ function vsa_get_options() {
 }
 
 /**
- * ---------------------------------------------------------------------
+ * Check whether current user is excluded by role
+ *
+ * @return bool
+ */
+function vsa_is_current_user_excluded() {
+    $opts = vsa_get_options();
+    $exclude_roles = isset( $opts['exclude_roles'] ) ? (array) $opts['exclude_roles'] : array();
+
+    if ( empty( $exclude_roles ) ) {
+        return false;
+    }
+
+    if ( ! is_user_logged_in() ) {
+        // if user not logged in, they don't have roles -> not excluded
+        return false;
+    }
+
+    $user = wp_get_current_user();
+    if ( empty( $user ) || empty( $user->roles ) ) {
+        return false;
+    }
+
+    foreach ( (array) $user->roles as $r ) {
+        if ( in_array( $r, $exclude_roles, true ) ) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
  * Helper: Is the URL external to the current site and not whitelisted?
+ *
+ * Supports wildcard whitelist entries using '*' (e.g. *.example.com, youtube.*)
  *
  * @param string $url
  * @return bool
@@ -48,6 +82,11 @@ function vsa_is_external_url( $url ) {
     $opts = vsa_get_options();
     $enabled = isset( $opts['enabled'] ) ? (bool) $opts['enabled'] : true;
     if ( ! $enabled ) {
+        return false;
+    }
+
+    // If current user is excluded by role, do not treat links as external (no changes).
+    if ( vsa_is_current_user_excluded() ) {
         return false;
     }
 
@@ -64,40 +103,48 @@ function vsa_is_external_url( $url ) {
 
     $host = strtolower( $url_parsed['host'] );
 
-    // Get site host(s)
+    // Get site host
     $site_host = strtolower( wp_parse_url( home_url(), PHP_URL_HOST ) );
     if ( ! $site_host ) {
         return false;
     }
 
-    // If host is same as site host, it's internal
+    // exact site match => internal
     if ( strcasecmp( $host, $site_host ) === 0 ) {
         return false;
     }
 
-    // Check whitelist
+    // Check whitelist (supports wildcard "*")
     $whitelist_raw = isset( $opts['whitelist'] ) ? $opts['whitelist'] : '';
     if ( $whitelist_raw ) {
         $normalized = str_replace( array("\r\n","\r"), "\n", $whitelist_raw );
         $lines = array_map( 'trim', explode( "\n", $normalized ) );
+
         foreach ( $lines as $line ) {
             if ( empty( $line ) ) {
                 continue;
             }
-            // strip protocol and path if user pasted full URLs
+            // remove protocol if pasted, get host-ish portion
             $clean = preg_replace( '#^https?://#i', '', $line );
             $clean_host = trim( parse_url( 'http://' . $clean, PHP_URL_HOST ) );
             if ( ! $clean_host ) {
                 continue;
             }
+
             $wl = strtolower( $clean_host );
-            // exact host match
-            if ( $host === $wl ) {
-                return false;
-            }
-            // allow matching subdomains: e.g., whitelist example.com should match foo.example.com
-            if ( preg_match( '/(^|\.)' . preg_quote( $wl, '/' ) . '$/', $host ) ) {
-                return false;
+
+            // If the whitelist contains a wildcard '*' convert to regex match
+            if ( strpos( $wl, '*' ) !== false ) {
+                // Escape regex, then replace \* with .* and anchor to end
+                $regex = '/^' . str_replace( array('\*'), array('.*'), preg_quote( $wl, '/' ) ) . '$/i';
+                if ( preg_match( $regex, $host ) ) {
+                    return false; // whitelisted
+                }
+            } else {
+                // exact host match or subdomain match (whitelist example.com should match foo.example.com)
+                if ( $host === $wl || preg_match( '/(^|\.)' . preg_quote( $wl, '/' ) . '$/', $host ) ) {
+                    return false; // whitelisted
+                }
             }
         }
     }
@@ -118,9 +165,12 @@ function vsa_add_target_blank_to_content_links( $content ) {
         return $content;
     }
 
-    // If plugin disabled, return content unchanged
+    // If plugin disabled or current user excluded, return content unchanged
     $opts = vsa_get_options();
     if ( isset( $opts['enabled'] ) && ! $opts['enabled'] ) {
+        return $content;
+    }
+    if ( vsa_is_current_user_excluded() ) {
         return $content;
     }
 
@@ -207,7 +257,7 @@ add_filter( 'nav_menu_link_attributes', 'vsa_nav_menu_set_target_for_external_li
  * ---------------------------------------------------------------------
  * Frontend JS: ensure any dynamically-inserted links are handled
  * ---------------------------------------------------------------------
- * Register an inline script that adjusts links on DOM ready and observes DOM changes.
+ * We gate the JS enqueue so it will not run for excluded roles.
  */
 function vsa_enqueue_frontend_script() {
     if ( is_admin() ) {
@@ -216,6 +266,10 @@ function vsa_enqueue_frontend_script() {
 
     $opts = vsa_get_options();
     if ( isset( $opts['enabled'] ) && ! $opts['enabled'] ) {
+        return;
+    }
+
+    if ( vsa_is_current_user_excluded() ) {
         return;
     }
 
@@ -322,15 +376,23 @@ function vsa_external_links_register_settings() {
 
     add_settings_field(
         'whitelist',
-        'Whitelisted domains (one per line)',
+        'Whitelisted domains (one per line) — wildcards supported (use *). Example: *.example.com',
         'vsa_external_links_field_whitelist_cb',
+        'vsa-external-links',
+        'vsa_external_links_main'
+    );
+
+    add_settings_field(
+        'exclude_roles',
+        'Exclude these user roles from plugin behaviour',
+        'vsa_external_links_field_exclude_roles_cb',
         'vsa-external-links',
         'vsa_external_links_main'
     );
 }
 
 function vsa_external_links_main_cb() {
-    echo '<p>Configure which external links should open in a new tab and which domains should be ignored (whitelisted).</p>';
+    echo '<p>Configure which external links should open in a new tab and which domains should be ignored (whitelisted). You can use wildcard patterns in the whitelist (for example <code>*.example.com</code>).</p>';
 }
 
 function vsa_external_links_field_enabled_cb() {
@@ -343,7 +405,32 @@ function vsa_external_links_field_whitelist_cb() {
     $opts = vsa_get_options();
     $whitelist = isset( $opts['whitelist'] ) ? $opts['whitelist'] : vsa_get_default_options()['whitelist'];
     echo '<textarea name="vsa_external_links_options[whitelist]" rows="6" cols="60" style="font-family:monospace;">' . esc_textarea( $whitelist ) . '</textarea>';
-    echo '<p class="description">Add domains (no protocol). Example: <code>youtube.com</code> or <code>sub.example.com</code>. Wildcards are not supported; list each domain on its own line.</p>';
+    echo '<p class="description">Add domains or wildcard patterns (no protocol). Example: <code>youtube.com</code> or <code>*.example.com</code> or <code>youtube.*</code>. Wildcards use "*" and match any characters.</p>';
+}
+
+function vsa_external_links_field_exclude_roles_cb() {
+    $opts = vsa_get_options();
+    $excluded = isset( $opts['exclude_roles'] ) ? (array) $opts['exclude_roles'] : array();
+
+    // Get editable roles
+    if ( function_exists( 'get_editable_roles' ) ) {
+        $roles = get_editable_roles();
+    } else {
+        // fallback - minimal list
+        $roles = array(
+            'administrator' => array('name' => 'Administrator'),
+            'editor'        => array('name' => 'Editor'),
+            'author'        => array('name' => 'Author'),
+            'contributor'   => array('name' => 'Contributor'),
+            'subscriber'    => array('name' => 'Subscriber'),
+        );
+    }
+
+    foreach ( $roles as $role_key => $role_info ) {
+        $checked = in_array( $role_key, $excluded, true ) ? 'checked' : '';
+        echo '<label style="display:block;margin-right:12px;"><input type="checkbox" name="vsa_external_links_options[exclude_roles][]" value="' . esc_attr( $role_key ) . '" ' . $checked . '> ' . esc_html( $role_info['name'] ) . '</label>';
+    }
+    echo '<p class="description">Select roles for which the plugin should <strong>not</strong> modify links. Common use: exclude <code>Administrator</code> so admins are not affected.</p>';
 }
 
 /**
@@ -354,24 +441,36 @@ function vsa_external_links_sanitize_options( $input ) {
 
     $output['enabled'] = isset( $input['enabled'] ) && ( $input['enabled'] == 1 || $input['enabled'] === '1' ) ? 1 : 0;
 
-    // Sanitize whitelist: keep only domain-like characters and line breaks
+    // Sanitize whitelist: keep only domain-like characters, wildcards and line breaks
     $white = isset( $input['whitelist'] ) ? $input['whitelist'] : '';
-    // Normalize line endings
     $white = str_replace( array("\r\n","\r"), "\n", $white );
     $lines = array_map( 'trim', explode( "\n", $white ) );
     $clean_lines = array();
 
     foreach ( $lines as $line ) {
         if ( empty( $line ) ) continue;
-        // strip protocol and path if user pasted full URLs
+        // strip protocol if pasted
         $line = preg_replace( '#^https?://#i', '', $line );
+        // allow wildcard '*' and domain chars
         $host = trim( parse_url( 'http://' . $line, PHP_URL_HOST ) );
         if ( $host ) {
+            // normalize: lowercase
             $clean_lines[] = sanitize_text_field( strtolower( $host ) );
         }
     }
 
     $output['whitelist'] = implode( "\n", array_unique( $clean_lines ) );
+
+    // Exclude roles - sanitize list of role slugs
+    $ex_roles = isset( $input['exclude_roles'] ) ? (array) $input['exclude_roles'] : array();
+    $clean_roles = array();
+    foreach ( $ex_roles as $r ) {
+        $r = sanitize_text_field( $r );
+        if ( $r ) {
+            $clean_roles[] = $r;
+        }
+    }
+    $output['exclude_roles'] = array_values( array_unique( $clean_roles ) );
 
     return $output;
 }
@@ -401,6 +500,17 @@ function vsa_external_links_options_page() {
     // Logo path - put your logo at assets/vsa-logo-small.png
     $logo_path = plugin_dir_path( __FILE__ ) . 'assets/vsa-logo-small.png';
     $logo_url  = plugin_dir_url( __FILE__ ) . 'assets/vsa-logo-small.png';
+
+    // Handle admin notices for import/export results
+    if ( isset( $_GET['vsa_import_result'] ) ) {
+        $msg = sanitize_text_field( wp_unslash( $_GET['vsa_import_result'] ) );
+        echo '<div class="notice notice-success is-dismissible"><p>' . esc_html( $msg ) . '</p></div>';
+    }
+    if ( isset( $_GET['vsa_import_error'] ) ) {
+        $msg = sanitize_text_field( wp_unslash( $_GET['vsa_import_error'] ) );
+        echo '<div class="notice notice-error is-dismissible"><p>' . esc_html( $msg ) . '</p></div>';
+    }
+
     ?>
     <div class="wrap">
         <h1>External Links: Open in New Tab (VSA)</h1>
@@ -410,7 +520,7 @@ function vsa_external_links_options_page() {
             <?php endif; ?>
             <div>
                 <p style="margin:0;font-size:1.05em;">Force external links to open in a new tab/window for improved UX and safety.</p>
-                <p style="margin:4px 0 0 0;color:#666;">Version 1.10 | By Vidyasagar Academy</p>
+                <p style="margin:4px 0 0 0;color:#666;">Version 1.11 | By Vidyasagar Academy</p>
             </div>
         </div>
 
@@ -421,8 +531,117 @@ function vsa_external_links_options_page() {
                 submit_button();
             ?>
         </form>
+
+        <h2>Export / Import Settings</h2>
+        <p>Export your plugin settings to a JSON file or import settings from a previously exported file.</p>
+
+        <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+            <?php wp_nonce_field( 'vsa_export_settings', 'vsa_export_nonce' ); ?>
+            <input type="hidden" name="action" value="vsa_export_settings">
+            <?php submit_button( 'Export Settings', 'secondary' ); ?>
+        </form>
+
+        <form method="post" enctype="multipart/form-data" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin-top:10px;">
+            <?php wp_nonce_field( 'vsa_import_settings', 'vsa_import_nonce' ); ?>
+            <input type="hidden" name="action" value="vsa_import_settings">
+            <input type="file" name="vsa_import_file" accept=".json" required>
+            <?php submit_button( 'Import Settings', 'primary', 'submit', true ); ?>
+        </form>
+
     </div>
     <?php
+}
+
+/**
+ * ---------------------------------------------------------------------
+ * Export and Import handlers (admin-post)
+ * ---------------------------------------------------------------------
+ */
+
+/**
+ * Export settings handler
+ */
+add_action( 'admin_post_vsa_export_settings', 'vsa_handle_export_settings' );
+function vsa_handle_export_settings() {
+    if ( ! current_user_can( 'manage_options' ) ) {
+        wp_die( 'Insufficient permissions' );
+    }
+
+    check_admin_referer( 'vsa_export_settings', 'vsa_export_nonce' );
+
+    $opts = vsa_get_options();
+
+    $payload = array(
+        'version' => '1.11',
+        'exported_at' => gmdate( 'c' ),
+        'settings' => $opts,
+    );
+
+    $json = wp_json_encode( $payload );
+
+    if ( false === $json ) {
+        wp_die( 'Failed to encode settings to JSON.' );
+    }
+
+    $filename = 'vsa-external-links-settings-1.11-' . date( 'Y-m-d' ) . '.json';
+
+    header( 'Content-Description: File Transfer' );
+    header( 'Content-Type: application/json; charset=utf-8' );
+    header( 'Content-Disposition: attachment; filename="' . $filename . '"' );
+    header( 'Expires: 0' );
+    header( 'Cache-Control: must-revalidate' );
+    header( 'Pragma: public' );
+
+    echo $json;
+    exit;
+}
+
+/**
+ * Import settings handler
+ */
+add_action( 'admin_post_vsa_import_settings', 'vsa_handle_import_settings' );
+function vsa_handle_import_settings() {
+    if ( ! current_user_can( 'manage_options' ) ) {
+        wp_die( 'Insufficient permissions' );
+    }
+
+    check_admin_referer( 'vsa_import_settings', 'vsa_import_nonce' );
+
+    if ( empty( $_FILES['vsa_import_file'] ) || ! isset( $_FILES['vsa_import_file']['tmp_name'] ) ) {
+        $redirect = add_query_arg( 'vsa_import_error', urlencode( 'No file uploaded.' ), admin_url( 'options-general.php?page=vsa-external-links' ) );
+        wp_safe_redirect( $redirect );
+        exit;
+    }
+
+    $tmp = $_FILES['vsa_import_file']['tmp_name'];
+    $contents = file_get_contents( $tmp );
+    if ( false === $contents ) {
+        $redirect = add_query_arg( 'vsa_import_error', urlencode( 'Failed to read uploaded file.' ), admin_url( 'options-general.php?page=vsa-external-links' ) );
+        wp_safe_redirect( $redirect );
+        exit;
+    }
+
+    $data = json_decode( $contents, true );
+    if ( null === $data || ! is_array( $data ) ) {
+        $redirect = add_query_arg( 'vsa_import_error', urlencode( 'Invalid JSON file.' ), admin_url( 'options-general.php?page=vsa-external-links' ) );
+        wp_safe_redirect( $redirect );
+        exit;
+    }
+
+    if ( ! isset( $data['settings'] ) || ! is_array( $data['settings'] ) ) {
+        $redirect = add_query_arg( 'vsa_import_error', urlencode( 'JSON does not contain settings.' ), admin_url( 'options-general.php?page=vsa-external-links' ) );
+        wp_safe_redirect( $redirect );
+        exit;
+    }
+
+    // Sanitize incoming settings using our sanitizer
+    $sanitized = vsa_external_links_sanitize_options( $data['settings'] );
+
+    update_option( 'vsa_external_links_options', $sanitized );
+
+    $redirect = add_query_arg( 'vsa_import_result', urlencode( 'Settings imported successfully.' ), admin_url( 'options-general.php?page=vsa-external-links' ) );
+    wp_safe_redirect( $redirect );
+    exit;
 }
 
 /**
@@ -454,7 +673,7 @@ function vsa_remove_default_plugin_meta( $plugin_meta, $plugin_file, $plugin_dat
 }
 
 /**
- * Add our single custom meta: "Version 1.10 | By VSA | Contact Support"
+ * Add our single custom meta: "Version 1.11 | By VSA | Contact Support"
  */
 add_filter( 'plugin_row_meta', 'vsa_add_plugin_row_meta', 10, 4 );
 function vsa_add_plugin_row_meta( $plugin_meta, $plugin_file, $plugin_data, $status ) {
@@ -465,7 +684,7 @@ function vsa_add_plugin_row_meta( $plugin_meta, $plugin_file, $plugin_data, $sta
 
     $contact_url = esc_url( 'https://vsa.edu.in/contact/' );
 
-    $custom_meta = '<span style="display:inline-block;margin-right:8px">Version 1.10 | By VSA | <a href="' . $contact_url . '" target="_blank" rel="noopener noreferrer">Contact Support</a></span>';
+    $custom_meta = '<span style="display:inline-block;margin-right:8px">Version 1.11 | By VSA | <a href="' . $contact_url . '" target="_blank" rel="noopener noreferrer">Contact Support</a></span>';
 
     array_unshift( $plugin_meta, $custom_meta );
 
@@ -493,13 +712,13 @@ function vsa_admin_activation_notice() {
 
     // Only show if options are missing (first activation)
     if ( false === get_option( 'vsa_external_links_options' ) ) {
-        echo '<div class="notice notice-info is-dismissible"><p><strong>External Links (VSA):</strong> Please review settings at <a href="' . esc_url( admin_url( 'options-general.php?page=vsa-external-links' ) ) . '">Settings → External Links (VSA)</a> to configure whitelisted domains.</p></div>';
+        echo '<div class="notice notice-info is-dismissible"><p><strong>External Links (VSA):</strong> Please review settings at <a href="' . esc_url( admin_url( 'options-general.php?page=vsa-external-links' ) ) . '">Settings → External Links (VSA)</a> to configure whitelisted domains and exclude roles.</p></div>';
     }
 }
 
 /**
  * ---------------------------------------------------------------------
- * Uninstall cleanup (no persistent data stored beyond one DB option)
+ * Uninstall cleanup (remove option)
  * ---------------------------------------------------------------------
  */
 register_uninstall_hook( __FILE__, 'vsa_uninstall_cleanup' );
